@@ -9,7 +9,7 @@ from telethon.errors import SessionPasswordNeededError
 from fastapi import FastAPI
 import uvicorn
 
-# --- ТВОИ ОБНОВЛЕННЫЕ ДАННЫЕ СЕЙЧАС ---
+# --- ТВОИ ДАННЫЕ ВШИТЫ НАПРЯМУЮ ---
 BOT_TOKEN = "8947765577:AAFeZC4aE9J-KTTZ18yZffUWehUAEHWgYwo"
 ADMIN_ID = 8669477816
 API_ID = 39188918
@@ -32,8 +32,8 @@ app = FastAPI()
 
 @app.get("/")
 def read_root():
-    # Сюда можно направлять твой скрипт анти-спячки
-    return {"status": "ok", "message": "Бот-логер запущен и работает!"}
+    # На эту ссылку можно вешать твой пингер против спячки (например, cron-job.org)
+    return {"status": "ok", "message": "Бот-логер запущен и работает без спячки!"}
 
 # --- ЛОГИКА ТЕЛЕГРАМА (СБОР СООБЩЕНИЙ И УДАЛЕНИЯ) ---
 def register_userbot_handlers(client, phone):
@@ -105,6 +105,16 @@ async def callback_handler(event):
         return
     data = event.data
     if data == b"add_acc":
+        # ИСПРАВЛЕНИЕ: Полное принудительное обнуление сессий перед входом во второй аккаунт
+        if ADMIN_ID in user_steps:
+            try:
+                old_cl = user_steps[ADMIN_ID].get("client")
+                if old_cl:
+                    await old_cl.disconnect()
+            except:
+                pass
+            user_steps.pop(ADMIN_ID, None)
+            
         user_steps[ADMIN_ID] = {"step": "phone"}
         await event.respond("📱 Введи номер телефона в формате `+79991234567`:")
     elif data == b"list_acc":
@@ -113,7 +123,7 @@ async def callback_handler(event):
         if not accounts:
             await event.respond("Список аккаунтов пуст.")
         else:
-            text = "🟩 <b>Подключенные аккаунты:</b>\n\n" + "\n".join([f"• <code>{acc}</code>" for acc in accounts])
+            text = "🟩 <b>Подключенные аккаунты:</b>\n\n" + "\n".join([f"• <code>{acc[0]}</code>" for acc in accounts])
             await event.respond(text, parse_mode='html')
 
 @bot.on(events.NewMessage(from_users=ADMIN_ID))
@@ -189,7 +199,7 @@ async def start_tg_bot():
     await bot.run_until_disconnected()
 
 async def main():
-    # Запускаем бота фоном
+    # Запускаем бота фоном, чтобы он не блокировал порт
     asyncio.create_task(start_tg_bot())
     
     # Поднимаем веб-сервер на порту 10000 для Render
@@ -199,4 +209,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-                    
+    
