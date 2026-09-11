@@ -114,18 +114,15 @@ async def callback_handler(event):
 # --- ПРИЕМ ФАЙЛОВ .SESSION ИЗ ЧАТА ---
 @bot.on(events.NewMessage(from_users=ADMIN_ID))
 async def handle_document(event):
-    # Проверяем, что нам прислали именно файл
     if not event.document:
         return
         
-    file_name = event.document.attributes[0].file_name
+    file_name = event.document.attributes.file_name
     
-    # Проверяем, что расширение файла именно .session
     if not file_name.endswith(".session"):
         await event.respond("❌ Мне нужны только файлы с расширением <code>.session</code>!", parse_mode='html')
         return
 
-    # Защита от перезаписи главной сессии бота
     if file_name == "main_bot_session.session":
         await event.respond("❌ Файл не должен называться <code>main_bot_session.session</code>!", parse_mode='html')
         return
@@ -133,18 +130,15 @@ async def handle_document(event):
     status_msg = await event.respond(f"⏳ Скачиваю файл <code>{file_name}</code>...", parse_mode='html')
     
     try:
-        # Скачиваем файл сессии на сервер
         path = await event.download_media(file=file_name)
         session_name = file_name.replace(".session", "")
         
-        # Если такой аккаунт уже был запущен, отключаем его старую копию
         if session_name in active_clients:
             try:
                 await active_clients[session_name].disconnect()
             except:
                 pass
         
-        # Сразу пробуем запустить новый файл
         cl = TelegramClient(session_name, API_ID, API_HASH)
         await cl.connect()
         
@@ -162,7 +156,8 @@ async def handle_document(event):
 
 async def start_tg_bot():
     await bot.start(bot_token=BOT_TOKEN)
-    await start_all_saved_accounts_task = asyncio.create_task(start_all_session_files())
+    # ИСПРАВЛЕНО: убран await перед присваиванием переменной
+    start_all_saved_accounts_task = asyncio.create_task(start_all_session_files())
     print("🤖 Системный бот запущен!")
     await bot.run_until_disconnected()
 
@@ -174,4 +169,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-                       
+        
