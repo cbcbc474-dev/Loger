@@ -12,8 +12,8 @@ import uvicorn
 # --- ТВОИ ДАННЫЕ ВШИТЫ НАПРЯМУЮ ---
 BOT_TOKEN = "8947765577:AAFeZC4aE9J-KTTZ18yZffUWehUAEHWgYwo"
 ADMIN_ID = 8669477816
-API_ID = 4
-API_HASH = "e83720730452e1e3b8d14eb363e793e1"
+API_ID = 37322022
+API_HASH = "2550dbe64de423ecc2891b723be796a3"
 
 # --- НАСТРОЙКА БАЗЫ ДАННЫХ SQLITE (ДЛЯ КЭША СООБЩЕНИЙ) ---
 logging.basicConfig(level=logging.INFO)
